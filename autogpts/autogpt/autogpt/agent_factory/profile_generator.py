@@ -71,6 +71,7 @@ class AgentProfileGeneratorConfiguration(SystemConfiguration):
             },
         }
     ]
+
     system_prompt: str = UserConfigurable(
         default=(
             "Your job is to respond to a user-defined task, given in triple quotes, by "
@@ -179,7 +180,7 @@ class AgentProfileGenerator(PromptStrategy):
             )
         )
         prompt = ChatPrompt(
-            messages=[system_message, user_message],
+            messages=[user_message],
             functions=[self._create_agent_function],
         )
         return prompt
@@ -215,6 +216,23 @@ class AgentProfileGenerator(PromptStrategy):
             raise
         return ai_profile, ai_directives
 
+# TODO: Convert this to class to simplify arguments
+async def prompt_for_property(
+    agent_profile_generator: AgentProfileGenerator,
+    llm_provider: ChatModelProvider,
+    app_config: Config,
+    base_prompt: str,
+    property_prompt: str,
+    task: str
+):
+    ### Name
+    prompt = agent_profile_generator.build_prompt(
+        f"{base_prompt}\n{property_prompt}\n{task}"
+    )
+    prop = (await llm_provider.create_chat_completion(prompt.messages, model_name=app_config.smart_llm)).response['content']
+    if prop.index('\n') != -1:
+        return prop.split('\n')[0]
+    return prop
 
 async def generate_agent_profile_for_task(
     task: str,
@@ -229,6 +247,17 @@ async def generate_agent_profile_for_task(
     agent_profile_generator = AgentProfileGenerator(
         **AgentProfileGenerator.default_configuration.dict()  # HACK
     )
+    
+    base_prompt:str = (
+        "Your job is to create an autonomous agent"
+    )
+
+    name_prompt: str = f"What should the name of the agent be for the instruction below? Only respond with the name of the agent, nothing else."
+
+    name = await prompt_for_property(agent_profile_generator, llm_provider, app_config, base_prompt, name_prompt, task)
+    print('########################')
+    print(name)
+    print('########################')
 
     prompt = agent_profile_generator.build_prompt(task)
 

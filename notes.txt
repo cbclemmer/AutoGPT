@@ -1,0 +1,6 @@
+Python must be 3.10.x
+poetry must be latest version
+regenerate lock file: poetry lock
+install poetry deps: poetry install
+
+run agent: ./run agent start autogpt

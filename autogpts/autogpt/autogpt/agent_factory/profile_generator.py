@@ -173,7 +173,6 @@ class AgentProfileGenerator(PromptStrategy):
         return self._model_classification
 
     def build_prompt(self, user_objective: str = "", **kwargs) -> ChatPrompt:
-        system_message = ChatMessage.system(self._system_prompt_message)
         user_message = ChatMessage.user(
             self._user_prompt_template.format(
                 user_objective=user_objective,
@@ -234,13 +233,17 @@ class PropertyPrompter:
             f"{self.base_prompt}\n{property_prompt}\n{self.task}"
         )
         prop = (await self.provider.create_chat_completion(prompt.messages, model_name=self.app_config.smart_llm)).response['content']
-        if not first_line:
-            return prop
-        try:
-            prop.index('\n') 
-            prop.split('\n')[0]
-        except:
-            return prop
+        if prop is None:
+            return self.prompt_for_property(property_prompt, first_line)
+        if first_line:
+            try:
+                prop.index('\n') 
+                prop = prop.split('\n')[0]
+            except:
+                prop = prop
+        if prop is None:
+            return self.prompt_for_property(property_prompt, first_line)
+        return prop
 
 async def generate_agent_profile_for_task(
     task: str,

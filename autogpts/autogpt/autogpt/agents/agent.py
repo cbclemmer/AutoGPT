@@ -120,9 +120,9 @@ class Agent(
             extra_messages = []
 
         # Clock
-        extra_messages.append(
-            ChatMessage.system(f"The current time and date is {time.strftime('%c')}"),
-        )
+        # extra_messages.append(
+        #     ChatMessage.system(f"The current time and date is {time.strftime('%c')}"),
+        # )
 
         # Add budget information (if any) to prompt
         api_manager = ApiManager()

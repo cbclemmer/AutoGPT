@@ -36,23 +36,15 @@ class OneShotAgentPromptConfiguration(SystemConfiguration):
         "You operate within the following constraints:\n"
         "{constraints}\n"
         "\n"
-        "## Resources\n"
-        "You can leverage access to the following resources:\n"
-        "{resources}\n"
-        "\n"
-        "## Commands\n"
-        "These are the ONLY commands you can use."
-        " Any action you perform must be possible through one of these commands:\n"
-        "{commands}\n"
-        "\n"
         "## Best practices\n"
         "{best_practices}"
     )
 
     DEFAULT_CHOOSE_ACTION_INSTRUCTION: str = (
-        "Determine exactly one command to use next based on the given goals "
+        "Using the list below, determine exactly one command to use next based on the given goals "
         "and the progress you have made so far, "
-        "and respond using the JSON schema specified previously:"
+        "and respond only with a command from the list below, nothing else:\n"
+        "{commands}"
     )
 
     DEFAULT_RESPONSE_SCHEMA = JSONSchema(
@@ -149,7 +141,8 @@ class OneShotAgentPromptStrategy(PromptStrategy):
     @property
     def model_classification(self) -> LanguageModelClassification:
         return LanguageModelClassification.FAST_MODEL  # FIXME: dynamic switching
-
+    
+    # TODO: Change this from one prompt to one for each property on the returned json
     def build_prompt(
         self,
         *,
@@ -177,21 +170,12 @@ class OneShotAgentPromptStrategy(PromptStrategy):
         system_prompt = self.build_system_prompt(
             ai_profile=ai_profile,
             ai_directives=ai_directives,
-            commands=commands,
             include_os_info=include_os_info,
         )
         system_prompt_tlength = count_message_tokens(ChatMessage.system(system_prompt))
 
         user_task = f'"""{task}"""'
         user_task_tlength = count_message_tokens(ChatMessage.user(user_task))
-
-        response_format_instr = self.response_format_instruction(
-            self.config.use_functions_api
-        )
-        extra_messages.append(ChatMessage.system(response_format_instr))
-
-        final_instruction_msg = ChatMessage.user(self.config.choose_action_instruction)
-        final_instruction_tlength = count_message_tokens(final_instruction_msg)
 
         if event_history:
             progress = self.compile_progress(
@@ -201,7 +185,6 @@ class OneShotAgentPromptStrategy(PromptStrategy):
                     max_prompt_tokens
                     - system_prompt_tlength
                     - user_task_tlength
-                    - final_instruction_tlength
                     - count_message_tokens(extra_messages)
                 ),
             )
@@ -214,8 +197,7 @@ class OneShotAgentPromptStrategy(PromptStrategy):
             messages=[
                 ChatMessage.system(system_prompt),
                 ChatMessage.user(user_task),
-                *extra_messages,
-                final_instruction_msg,
+                *extra_messages
             ],
         )
 
@@ -225,7 +207,6 @@ class OneShotAgentPromptStrategy(PromptStrategy):
         self,
         ai_profile: AIProfile,
         ai_directives: AIDirectives,
-        commands: list[CompletionModelFunction],
         include_os_info: bool,
     ) -> str:
         system_prompt_parts = (
@@ -237,8 +218,6 @@ class OneShotAgentPromptStrategy(PromptStrategy):
                         ai_directives.constraints
                         + self._generate_budget_constraint(ai_profile.api_budget)
                     ),
-                    resources=format_numbered_list(ai_directives.resources),
-                    commands=self._generate_commands_list(commands),
                     best_practices=format_numbered_list(ai_directives.best_practices),
                 )
             ]

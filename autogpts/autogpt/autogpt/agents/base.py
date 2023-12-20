@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -244,32 +245,89 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         # Scratchpad as surrogate PromptGenerator for plugin hooks
         self._prompt_scratchpad = PromptScratchpad()
 
-        prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad)
-        prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+        commands = self.prompt_strategy._generate_commands_list(get_openai_command_specs(
+            self.command_registry.list_available_commands(self)
+        ))
 
-        logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-        response = await self.llm_provider.create_chat_completion(
-            prompt.messages,
-            functions=get_openai_command_specs(
-                self.command_registry.list_available_commands(self)
+        prompts: dict = {
+            "observation": "What are your observations of the state of the task",
+            "thoughts": "What are your current thoughts on the state of the task",
+            "Reasoning": "Describe your reasoning for choosing the next action to take",
+            "self_criticism": "Criticize your reasoning and explain why it may be faulty",
+            "plan": "Create a plan and a new course of action", 
+            "speak": "given the context above what should be communicated to the user?",
+            "command": (
+                "Using the list below, determine exactly one command to use next based on the given goals "
+                "and the progress you have made so far, "
+                "and respond only with a command from the list below in JSON. Format your response in JSON according to the example:\n"
+                f"{commands}\n"
+                "Example:\n"
+                "{\n"
+                "    \"name\": \"write_file\",\n"
+                "    \"args\": [\"foo.txt\", \"contents of file\"]\n"
+                "}"
             )
-            + list(self._prompt_scratchpad.commands.values())
-            if self.config.use_functions_api
-            else [],
-            model_name=self.llm.name,
-            completion_parser=lambda r: self.parse_and_process_response(
-                r,
-                prompt,
-                scratchpad=self._prompt_scratchpad,
-            ),
-        )
+        }
+
+        responses = []
+        command = {}
+
+        for key in prompts:
+            value = prompts[key]
+            extra_messages = []
+            for response in responses:
+                logger.debug(response)
+                extra_messages.append(ChatMessage.user(response["prompt"]))
+                extra_messages.append(ChatMessage.assistant(response["response"]))
+            extra_messages.append(ChatMessage.user(value))
+            prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
+            prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+
+            logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+            get_response = lambda: self.llm_provider.create_chat_completion(
+                prompt.messages,
+                functions=get_openai_command_specs(
+                    self.command_registry.list_available_commands(self)
+                )
+                + list(self._prompt_scratchpad.commands.values())
+                if self.config.use_functions_api
+                else [],
+                model_name=self.llm.name,
+                completion_parser=lambda r: self.parse_and_process_response(
+                    r,
+                    prompt,
+                    scratchpad=self._prompt_scratchpad,
+                ),
+            )
+            if key == "command":
+                while True:
+                    response = (await get_response()).response["content"]
+                    try: 
+                        try: 
+                            response.index('{')
+                            formatted_response = response.split('{')[1].split('}')[0]
+                            formatted_response = "{" + formatted_response + "}"
+                        except:
+                            formatted_response = response
+                        logger.debug(formatted_response)
+                        cmd = json.loads(formatted_response)
+                        if not ("name" in cmd) or not ("args" in cmd):
+                            raise ValueError("Invalid format")
+                        command[key] = cmd
+                        break
+                    except:
+                        logger.debug(f'Parsing command failed, trying again. output: {response}')
+            else:
+                response = (await get_response()).response["content"]
+                command[key] = response
+                responses.append({
+                    "key": key,
+                    "prompt": value,
+                    "response": response
+                })
         self.config.cycle_count += 1
 
-        return self.on_response(
-            llm_response=response,
-            prompt=prompt,
-            scratchpad=self._prompt_scratchpad,
-        )
+        return command
 
     @abstractmethod
     async def execute(

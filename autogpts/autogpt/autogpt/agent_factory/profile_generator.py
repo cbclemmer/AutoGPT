@@ -187,7 +187,7 @@ class AgentProfileGenerator(PromptStrategy):
 
     def parse_response_content(
         self,
-        response_content: AssistantChatMessageDict,
+        arguments: dict,
     ) -> tuple[AIProfile, AIDirectives]:
         """Parse the actual text response from the objective model.
 
@@ -198,41 +198,49 @@ class AgentProfileGenerator(PromptStrategy):
             The parsed response.
 
         """
-        try:
-            arguments = json_loads(
-                response_content["tool_calls"][0]["function"]["arguments"]
-            )
-            ai_profile = AIProfile(
-                ai_name=arguments.get("name"),
-                ai_role=arguments.get("description"),
-            )
-            ai_directives = AIDirectives(
-                best_practices=arguments["directives"].get("best_practices"),
-                constraints=arguments["directives"].get("constraints"),
-                resources=[],
-            )
-        except KeyError:
-            logger.debug(f"Failed to parse this response content: {response_content}")
-            raise
+        ai_profile = AIProfile(
+            ai_name=arguments.get("name"),
+            ai_role=arguments.get("description"),
+        )
+        ai_directives = AIDirectives(
+            best_practices=arguments["directives"].get("best_practices"),
+            constraints=arguments["directives"].get("constraints"),
+            resources=[],
+        )
         return ai_profile, ai_directives
 
-# TODO: Convert this to class to simplify arguments
-async def prompt_for_property(
-    agent_profile_generator: AgentProfileGenerator,
-    llm_provider: ChatModelProvider,
-    app_config: Config,
-    base_prompt: str,
-    property_prompt: str,
-    task: str
-):
-    ### Name
-    prompt = agent_profile_generator.build_prompt(
-        f"{base_prompt}\n{property_prompt}\n{task}"
-    )
-    prop = (await llm_provider.create_chat_completion(prompt.messages, model_name=app_config.smart_llm)).response['content']
-    if prop.index('\n') != -1:
-        return prop.split('\n')[0]
-    return prop
+class PropertyPrompter:
+    def __init__(
+            self, 
+            profile_generator: AgentProfileGenerator,
+            app_config: Config,
+            provider: ChatModelProvider,
+            base_prompt: str,
+            task: str
+        ):
+        self.profile_generator = profile_generator
+        self.app_config = app_config
+        self.provider = provider
+        self.base_prompt = base_prompt
+        self.task = task
+
+    async def prompt_for_property(
+        self,
+        property_prompt: str,
+        first_line: bool = False
+    ) -> str:
+        ### Name
+        prompt = self.profile_generator.build_prompt(
+            f"{self.base_prompt}\n{property_prompt}\n{self.task}"
+        )
+        prop = (await self.provider.create_chat_completion(prompt.messages, model_name=self.app_config.smart_llm)).response['content']
+        if not first_line:
+            return prop
+        try:
+            prop.index('\n') 
+            prop.split('\n')[0]
+        except:
+            return prop
 
 async def generate_agent_profile_for_task(
     task: str,
@@ -249,31 +257,29 @@ async def generate_agent_profile_for_task(
     )
     
     base_prompt:str = (
-        "Your job is to create an autonomous agent"
+        "Your job is to create an autonomous agent. Do not ask further questions, just reply with your answer. Do not add extra information, only reply with the information requested."
     )
 
-    name_prompt: str = f"What should the name of the agent be for the instruction below? Only respond with the name of the agent, nothing else."
+    prompter = PropertyPrompter(agent_profile_generator, app_config, llm_provider, base_prompt, task)
 
-    name = await prompt_for_property(agent_profile_generator, llm_provider, app_config, base_prompt, name_prompt, task)
-    print('########################')
-    print(name)
-    print('########################')
-
-    prompt = agent_profile_generator.build_prompt(task)
-
-    # Call LLM with the string as user input
-    output = (
-        await llm_provider.create_chat_completion(
-            prompt.messages,
-            model_name=app_config.smart_llm,
-            functions=prompt.functions,
-        )
-    ).response
+    name_prompt: str = "What should the name of the agent be for the instruction below? Only respond with the name of the agent, nothing else."
+    desc_prompt: str = "Describe what the goal of the agent should be?"
+    direct_prompt: str = "Create a bullet list of directives for the agent to follow."
+    best_pract_prompt: str = f"{direct_prompt}\n What are the best practices that the agent should adhere to?"
+    constraint_prompt: str = f"{direct_prompt}\n What are the constraints the agent should restrict itself from"
+    profile: dict = {
+        "name": await prompter.prompt_for_property(name_prompt, True),
+        "description": await prompter.prompt_for_property(desc_prompt),
+        "directives": {
+            "best_practices": (await prompter.prompt_for_property(best_pract_prompt)).split('\n'),
+            "constraints": (await prompter.prompt_for_property(constraint_prompt)).split('\n')
+        }
+    }
 
     # Debug LLM Output
-    logger.debug(f"AI Config Generator Raw Output: {output}")
+    logger.debug(f"AI Config Generator Raw Output: {profile}")
 
     # Parse the output
-    ai_profile, ai_directives = agent_profile_generator.parse_response_content(output)
+    ai_profile, ai_directives = agent_profile_generator.parse_response_content(profile)
 
     return ai_profile, ai_directives

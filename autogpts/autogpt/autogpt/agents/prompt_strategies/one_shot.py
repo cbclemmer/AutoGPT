@@ -142,7 +142,6 @@ class OneShotAgentPromptStrategy(PromptStrategy):
     def model_classification(self) -> LanguageModelClassification:
         return LanguageModelClassification.FAST_MODEL  # FIXME: dynamic switching
     
-    # TODO: Change this from one prompt to one for each property on the returned json
     def build_prompt(
         self,
         *,

@@ -256,10 +256,11 @@ class AgentProtocolServer:
 
         # Propose next action
         try:
-            raw_output = await agent.propose_action()
-            next_command = raw_output["command"]["name"]
-            next_command_args = raw_output["command"]["args"]
-            logger.debug(f"AI output: {raw_output}")
+            command_name, command_args, thoughts = await agent.propose_action()
+            logger.debug(f"AI output: {thoughts}")
+            raw_output = thoughts
+            next_command = command_name
+            next_command_args = command_args
         except Exception as e:
             step = await self.db.update_step(
                 task_id=task_id,

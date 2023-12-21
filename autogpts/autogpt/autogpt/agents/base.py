@@ -261,8 +261,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         prompts: dict = {
             "observation": "What are your observations of the state of the task",
             "thoughts": "What are your current thoughts on the state of the task",
-            "reasoning": "Describe your reasoning for choosing the next action to take",
-            "self_criticism": "Criticize your reasoning and explain why it may be faulty",
+            "self_criticism": "Criticize your reasoning of the last action and explain why it may be faulty",
             "plan": "Create a plan and a new course of action", 
             "speak": "given the context above communicate the plan of action to the user.",
             "command": (
@@ -278,7 +277,8 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                 "        \"contents\": \"contents of file\"\n"
                 "    }\n"
                 "}"
-            )
+            ),
+            "reasoning": "Describe your reasoning for choosing the command",
         }
 
         responses = []
@@ -327,6 +327,11 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                             raise ValueError("Invalid format")
                         command_name = cmd["name"]
                         command_args = cmd["args"]
+                        responses.append({
+                            "key": key,
+                            "prompt": value,
+                            "response": json.dumps(cmd)
+                        })
                         if command_name not in command_names:
                             raise ValueError("Bad command name")
                         break

@@ -171,21 +171,21 @@ class OneShotAgentPromptStrategy(PromptStrategy):
             ai_directives=ai_directives,
             include_os_info=include_os_info,
         )
-        system_prompt_tlength = count_message_tokens(ChatMessage.system(system_prompt))
+        # system_prompt_tlength = count_message_tokens(ChatMessage.system(system_prompt))
 
         user_task = f'"""{task}"""'
-        user_task_tlength = count_message_tokens(ChatMessage.user(user_task))
+        # user_task_tlength = count_message_tokens(ChatMessage.user(user_task))
 
         if event_history:
             progress = self.compile_progress(
                 event_history,
                 count_tokens=count_tokens,
-                max_tokens=(
-                    max_prompt_tokens
-                    - system_prompt_tlength
-                    - user_task_tlength
-                    - count_message_tokens(extra_messages)
-                ),
+                # max_tokens=(
+                #     max_prompt_tokens
+                #     - system_prompt_tlength
+                #     - user_task_tlength
+                #     - count_message_tokens(extra_messages)
+                # ),
             )
             extra_messages.insert(
                 0,
@@ -262,11 +262,11 @@ class OneShotAgentPromptStrategy(PromptStrategy):
                 elif c.result.status == "interrupted_by_human":
                     step += f"- **Feedback:** {c.result.feedback}\n"
 
-            if max_tokens and count_tokens:
-                step_tokens = count_tokens(step)
-                if tokens + step_tokens > max_tokens:
-                    break
-                tokens += step_tokens
+            # if max_tokens and count_tokens:
+            #     step_tokens = count_tokens(step)
+            #     if tokens + step_tokens > max_tokens:
+            #         break
+            #     tokens += step_tokens
 
             steps.insert(0, step)
         #     start = i

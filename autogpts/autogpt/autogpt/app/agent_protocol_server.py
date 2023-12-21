@@ -187,6 +187,8 @@ class AgentProtocolServer:
 
         user_input = step_request.input if not is_init_step else ""
 
+        logger.debug(agent.event_history)
+
         if (
             not is_init_step
             and agent.event_history.current_episode
@@ -257,7 +259,6 @@ class AgentProtocolServer:
         # Propose next action
         try:
             command_name, command_args, thoughts = await agent.propose_action()
-            logger.debug(f"AI output: {thoughts}")
             raw_output = thoughts
             next_command = command_name
             next_command_args = command_args
@@ -269,7 +270,7 @@ class AgentProtocolServer:
                 output=f"An error occurred while proposing the next action: {e}",
             )
             return step
-
+        
         # Format step output
         output = (
             (

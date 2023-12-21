@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     )
     from autogpt.models.command_registry import CommandRegistry
 
+from autogpt.logs.log_cycle import (
+    NEXT_ACTION_FILE_NAME
+)
+
 from autogpt.agents.utils.prompt_scratchpad import PromptScratchpad
 from autogpt.config import ConfigBuilder
 from autogpt.config.ai_directives import AIDirectives
@@ -41,7 +45,7 @@ from autogpt.core.resource.model_providers.openai import (
 )
 from autogpt.core.runner.client_lib.logging.helpers import dump_prompt
 from autogpt.llm.providers.openai import get_openai_command_specs
-from autogpt.models.action_history import ActionResult, EpisodicActionHistory
+from autogpt.models.action_history import ActionResult, EpisodicActionHistory, Action
 from autogpt.prompts.prompt import DEFAULT_TRIGGERING_PROMPT
 
 from .utils.agent_file_manager import AgentFileManager
@@ -250,12 +254,14 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         for cmd in commands_list:
             command_names.append(cmd.name)
 
-        commands_str = self.prompt_strategy._generate_commands_list(get_openai_command_specs(commands_list))
+        commands_str = self.prompt_strategy._generate_commands_list(get_openai_command_specs(
+            self.command_registry.list_available_commands(self)
+        ))
 
         prompts: dict = {
             "observation": "What are your observations of the state of the task",
             "thoughts": "What are your current thoughts on the state of the task",
-            "Reasoning": "Describe your reasoning for choosing the next action to take",
+            "reasoning": "Describe your reasoning for choosing the next action to take",
             "self_criticism": "Criticize your reasoning and explain why it may be faulty",
             "plan": "Create a plan and a new course of action", 
             "speak": "given the context above communicate the plan of action to the user.",
@@ -311,6 +317,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     try: 
                         try: 
                             response.index('{')
+                            response = response.replace('\_', '_')
                             formatted_response = '}'.join(('{'.join(response.split('{')[1:])).split('}')[:-1])
                             formatted_response = "{" + formatted_response + "}"
                         except:
@@ -324,7 +331,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                             raise ValueError("Bad command name")
                         break
                     except Exception as e:
-                        logger.debug(f'Parsing command failed, trying again.\nerror: {e} \n output: {response}')
+                        logger.debug(f'Parsing command failed, trying again.\nerror: {e} \noutput: {response}')
             else:
                 response = (await get_response()).response["content"]
                 thoughts[key] = response
@@ -333,7 +340,25 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     "prompt": value,
                     "response": response
                 })
-        # self.config.cycle_count += 1
+
+        self.config.cycle_count += 1
+
+        self.log_cycle_handler.log_cycle(
+            self.ai_profile.ai_name,
+            self.created_at,
+            self.config.cycle_count,
+            thoughts,
+            NEXT_ACTION_FILE_NAME,
+        )
+
+        self.event_history.register_action(
+            Action(
+                name=command_name,
+                args=command_args,
+                reasoning=thoughts["reasoning"]
+            )
+        )
+
         return command_name, command_args, {
             "thoughts": thoughts,
             "command": {

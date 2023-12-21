@@ -337,6 +337,7 @@ class AgentDB:
                         step.output = output
                     if additional_output is not None:
                         step.additional_output = additional_output
+                    print(step)
                     session.commit()
                     return await self.get_step(task_id, step_id)
                 else:

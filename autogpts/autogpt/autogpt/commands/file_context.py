@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -115,7 +117,7 @@ def open_folder(path: Path, agent: Agent) -> tuple[str, FolderContextItem]:
     assert (agent_context := get_agent_context(agent)) is not None
 
     if not path.exists():
-        raise FileNotFoundError(f"open_folder {path} failed: no such file or directory")
+        os.mkdir(relative_path)
     elif not path.is_dir():
         raise CommandExecutionError(f"{path} exists but is not a folder")
 

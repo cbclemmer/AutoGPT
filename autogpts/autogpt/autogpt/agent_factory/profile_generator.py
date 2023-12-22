@@ -260,7 +260,7 @@ async def generate_agent_profile_for_task(
     )
     
     base_prompt:str = (
-        "Your job is to create an autonomous agent. Do not ask further questions, just reply with your answer. Do not add extra information, only reply with the information requested."
+        "Your job is to create an autonomous agent. Do not ask further questions, just reply with your answer. Do not add extra information, only reply with the information requested. Do not include code snippets in your reply."
     )
 
     prompter = PropertyPrompter(agent_profile_generator, app_config, llm_provider, base_prompt, task)

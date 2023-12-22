@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+from typing import List
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -234,6 +235,26 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
     @property
     def send_token_limit(self) -> int:
         return self.config.send_token_limit or self.llm.max_tokens * 3 // 4
+    
+    def _validate_command(self, s_cmd: str, command_list: List[str]) -> dict | None:
+        try:
+            try: 
+                s_cmd.index('{')
+                s_cmd = s_cmd.replace('\_', '_')
+                formatted_response = '}'.join(('{'.join(s_cmd.split('{')[1:])).split('}')[:-1])
+                formatted_response = "{" + formatted_response + "}"
+            except:
+                formatted_response = s_cmd
+            cmd = json.loads(formatted_response)
+            if not ("name" in cmd) or not ("args" in cmd):
+                raise ValueError("Invalid format")
+            if cmd["name"] not in command_list:
+                raise ValueError("Bad command name")
+        except Exception as e:
+            logger.debug(f'Parsing command failed, trying again.\nerror: {e} \noutput: {s_cmd}')
+            return None
+        return cmd
+
 
     async def propose_action(self) -> ThoughtProcessOutput:
         """Proposes the next action to execute, based on the task and current state.
@@ -251,12 +272,16 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
 
         commands_list = self.command_registry.list_available_commands(self)
         command_names = []
-        for cmd in commands_list:
-            command_names.append(cmd.name)
+        for selected_cmd in commands_list:
+            command_names.append(selected_cmd.name)
 
         commands_str = self.prompt_strategy._generate_commands_list(get_openai_command_specs(
             self.command_registry.list_available_commands(self)
         ))
+
+        summary_prompt = "Summarize your last answer in a few sentences. Do not include code snippets in the summary."
+        choose_command_prompt = "Which of these three commands is the best to use given the context above? Only respond with the command in a JSON format, nothing else."
+        reasoning_prompt = "Describe your reasoning for choosing the command"
 
         prompts: dict = {
             "observation": "What are your observations of the state of the task",
@@ -277,8 +302,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                 "        \"contents\": \"contents of file\"\n"
                 "    }\n"
                 "}"
-            ),
-            "reasoning": "Describe your reasoning for choosing the command",
+            )
         }
 
         responses = []
@@ -286,20 +310,27 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         command_name = '' 
         command_args = { }
 
+        count_tokens = lambda s: self.llm_provider.count_tokens(s, self.llm.name)
+
         for key in prompts:
             value = prompts[key]
             extra_messages = []
-            for response in responses:
-                extra_messages.append(ChatMessage.user(response["prompt"]))
-                extra_messages.append(ChatMessage.assistant(response["response"]))
+            if key != "speak" and key != "command":
+                for response in responses:
+                    extra_messages.append(ChatMessage.user(response["prompt"]))
+                    extra_messages.append(ChatMessage.assistant(response["response"]))
+            else:
+                extra_messages.append(ChatMessage.user(prompts["plan"]))
+                extra_messages.append(ChatMessage.assistant(thoughts["plan"]))
+
             extra_messages.append(ChatMessage.user(value))
             prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
             prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
 
             logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-            logger.debug(f"Prompt token count: {self.llm_provider.count_tokens(dump_prompt(prompt), self.llm.name)}")
-            get_response = lambda: self.llm_provider.create_chat_completion(
-                prompt.messages,
+            logger.debug(f"Prompt token count: {count_tokens(dump_prompt(prompt))}")
+            get_response = lambda p: self.llm_provider.create_chat_completion(
+                p.messages,
                 functions=get_openai_command_specs(commands_list)
                 + list(self._prompt_scratchpad.commands.values())
                 if self.config.use_functions_api
@@ -307,43 +338,84 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                 model_name=self.llm.name,
                 completion_parser=lambda r: self.parse_and_process_response(
                     r,
-                    prompt,
+                    p,
                     scratchpad=self._prompt_scratchpad,
-                ),
+                )
             )
+
             if key == "command":
+                commands = []
                 while True:
-                    response = (await get_response()).response["content"]
-                    try: 
-                        try: 
-                            response.index('{')
-                            response = response.replace('\_', '_')
-                            formatted_response = '}'.join(('{'.join(response.split('{')[1:])).split('}')[:-1])
-                            formatted_response = "{" + formatted_response + "}"
-                        except:
-                            formatted_response = response
-                        cmd = json.loads(formatted_response)
-                        if not ("name" in cmd) or not ("args" in cmd):
-                            raise ValueError("Invalid format")
-                        command_name = cmd["name"]
-                        command_args = cmd["args"]
-                        responses.append({
-                            "key": key,
-                            "prompt": value,
-                            "response": json.dumps(cmd)
-                        })
-                        if command_name not in command_names:
-                            raise ValueError("Bad command name")
+                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
+                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+                    response = (await get_response(prompt)).response["content"]
+                    selected_cmd = self._validate_command(response, command_names)
+                    if selected_cmd is None:
+                        continue
+                    extra_messages.append(ChatMessage.assistant(json.dumps(selected_cmd)))
+                    extra_messages.append(ChatMessage.user(reasoning_prompt))
+                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
+                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+                    reasoning = (await get_response(prompt)).response["content"]
+                    commands.append((selected_cmd, reasoning))
+                    logger.debug(f'CMD: {json.dumps(selected_cmd)}')
+                    logger.debug(f'Reason: {reasoning}')
+                    extra_messages = extra_messages[:-2]
+                    if len(commands) >= 3:
                         break
-                    except Exception as e:
-                        logger.debug(f'Parsing command failed, trying again.\nerror: {e} \noutput: {response}')
+                
+                extra_messages = extra_messages[:-3] # remove last reasoning prompt and the command prompt
+
+                first_res = True
+                while True:
+                    if not first_res:
+                        extra_messages = extra_messages[:-1]
+                    first_res = False
+                    
+                    prompt_str = choose_command_prompt + '\n'
+                    i = 1
+                    for selected_cmd in commands:
+                        prompt_str += f'Command #{i}\nCommand: ' + json.dumps(selected_cmd[0]) + f'\nReasoning: {selected_cmd[1]}\n\n'
+                        i += 1
+                    
+                    extra_messages.append(ChatMessage.user(prompt_str))
+                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
+                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+                    response = (await get_response(prompt)).response["content"]
+                    logger.debug('RES: ' + response)
+                    logger.debug('ONE')
+                    try:
+                        idx = response.lower().index('command #')
+                        logger.debug(f'TWO idx: {idx}')
+                        num = int(response[idx+9])
+                        logger.debug('EIGHT')
+                        selected_cmd = commands[num-1]
+                    except:
+                        continue
+                    logger.debug('THREE')
+                    command_name = selected_cmd[0]["name"]
+                    command_args = selected_cmd[0]["args"]
+                    thoughts[key] = selected_cmd[0]
+                    thoughts["reasoning"] = selected_cmd[1]
+                    break
             else:
-                response = (await get_response()).response["content"]
+                response = (await get_response(prompt)).response["content"]
+                summary = response
+                if  key != "plan" and count_tokens(response) > 100:
+                    prompt = ChatPrompt(messages=[
+                        ChatMessage.user(value),
+                        ChatMessage.assistant(response),
+                        ChatMessage.user(summary_prompt)
+                    ])
+                    summary = (await get_response(prompt)).response["content"]
                 thoughts[key] = response
                 responses.append({
                     "key": key,
                     "prompt": value,
-                    "response": response
+                    "response": summary
                 })
 
         self.config.cycle_count += 1

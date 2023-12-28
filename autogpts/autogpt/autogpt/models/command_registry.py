@@ -145,9 +145,14 @@ class CommandRegistry:
         for command_module in enabled_command_modules:
             new_registry.import_command_module(command_module)
 
+        disallowed_commands = [
+            'ask_user',
+            'execute_python_code'
+        ]
+
         # Unregister commands that are incompatible with the current config
         for command in [c for c in new_registry.commands.values()]:
-            if callable(command.enabled) and not command.enabled(config):
+            if callable(command.enabled) and not command.enabled(config) or command.name in disallowed_commands:
                 new_registry.unregister(command)
                 logger.debug(
                     f"Unregistering incompatible command '{command.name}':"

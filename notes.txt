@@ -4,3 +4,7 @@ regenerate lock file: poetry lock
 install poetry deps: poetry install
 
 run agent: ./run agent start autogpt
+
+TODO:
+bot does not know when it is done
+it does not include plan when selecting command or when tree of thought command selection

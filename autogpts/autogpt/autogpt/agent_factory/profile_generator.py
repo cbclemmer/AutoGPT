@@ -279,6 +279,10 @@ async def generate_agent_profile_for_task(
         }
     }
 
+    logger.debug('Agent profile generated:')
+    for key in profile.keys():
+        logger.debug(f'{key}:\n{profile[key]}\n\n')
+
     # Debug LLM Output
     logger.debug(f"AI Config Generator Raw Output: {profile}")
 

@@ -254,6 +254,13 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
             logger.debug(f'Parsing command failed, trying again.\nerror: {e} \noutput: {s_cmd}')
             return None
         return cmd
+    
+    def get_progress(self) -> str:
+        progress = self.prompt_strategy.compile_progress(
+            episode_history=self.event_history
+        )
+
+        return f"### Progress\n\n{progress}"
 
     def count_tokens(self, s: str) -> int:
         return self.llm_provider.count_tokens(s, self.llm.name)
@@ -284,8 +291,41 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
         logger.debug(f"Prompt token count: {self.count_tokens(dump_prompt(prompt))}")
         
-        return (await get_response(prompt)).response["content"]
+        response = (await get_response(prompt)).response["content"]
+        logger.debug(f'Response: \n{response}')
+        return response
 
+    async def check_done(self):
+        system_prompt = (
+            "You are an autonomous agent that can modify a users system."
+        )
+        check_done_prompt = (
+            "Given the current information, is the task done."
+            "Do not give steps to solve the problem, only respond with \"Task_Done\" if this task is done."
+            "Do not explain how to do the task, only determine whether the task is done."
+        )
+        response = await self.run_prompt([
+            ChatMessage.system(system_prompt),
+            ChatMessage.user(self.state.task),
+            ChatMessage.system(self.get_progress()),
+            ChatMessage.user(check_done_prompt)
+        ], False)
+
+        if 'task_done' in response.lower():
+            return 'finish', {}, {
+                "thoughts": {
+                    "observation": "",
+                    "thoughts": "",
+                    "self_critisism": "",
+                    "speak": response,
+                    "plan": ""
+                },
+                "command": {
+                    "name": "finish",
+                    "args": { }
+                }
+            }
+        return 'no', {}, {}
 
     async def propose_action(self) -> ThoughtProcessOutput:
         """Proposes the next action to execute, based on the task and current state.
@@ -310,7 +350,6 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
             self.command_registry.list_available_commands(self)
         ))
 
-        check_done_prompt = "Given the current information, is the task done. Do not give steps to solve the problem, only respond with \"Task_Done\" if this task is done."
         summary_prompt = "Summarize your last answer in a few sentences. Do not include code snippets in the summary."
         choose_command_prompt = "Which of these three commands is the best to use given the context above? Only respond with the command in a JSON format, nothing else."
         reasoning_prompt = "Describe your reasoning for choosing the command"
@@ -342,23 +381,10 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         command_name = '' 
         command_args = { }
 
-        response = await self.run_prompt([ChatMessage.user(check_done_prompt)])
-        logger.debug(f'Is done response: \n{response}')
-
-        if 'task_done' in response.lower():
-            return 'done', [], {
-                "thoughts": {
-                    "observation": "",
-                    "thoughts": "",
-                    "self_critisism": "",
-                    "speak": response,
-                    "plan": ""
-                },
-                "command": {
-                    "name": "done",
-                    "args": { }
-                }
-            }
+        if len(self.event_history) > 0:
+            cmd, cmd_args, thoughts = await self.check_done()
+            if cmd == 'finish':
+                return cmd, cmd_args, thoughts
 
         for key in prompts:
             value = prompts[key]
@@ -384,16 +410,22 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     extra_messages.append(ChatMessage.user(reasoning_prompt))
                     reasoning = await self.run_prompt(extra_messages)
                     commands.append((selected_cmd, reasoning))
-                    logger.debug(f'CMD: {json.dumps(selected_cmd)}')
-                    logger.debug(f'Reason: {reasoning}')
                     extra_messages = extra_messages[:-2]
                     if len(commands) >= 3:
                         break
                 
                 extra_messages = extra_messages[:-3] # remove last reasoning prompt and the command prompt
 
+                same = False
+                if json.dumps(commands[0]) == json.dumps(commands[1]) == json.dumps(commands[2]):
+                    same = True
+                    command_name = commands[0][0]["name"]
+                    command_args = commands[0][0]["args"]
+                    thoughts[key] = commands[0][0]
+                    thoughts["reasoning"] = commands[0][1]
+
                 first_res = True
-                while True:
+                while True and not same:
                     if not first_res:
                         extra_messages = extra_messages[:-1]
                     first_res = False
@@ -406,7 +438,6 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     
                     extra_messages.append(ChatMessage.user(prompt_str))
                     response = await self.run_prompt(extra_messages)
-                    logger.debug('RES: ' + response)
                     try:
                         idx = response.lower().index('command #')
                         num = int(response[idx+9])
@@ -422,12 +453,11 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                 response = await self.run_prompt(extra_messages)
                 summary = response
                 if  key != "plan" and self.count_tokens(response) > 100:
-                    prompt = ChatPrompt(messages=[
+                    summary = await self.run_prompt([
                         ChatMessage.user(value),
                         ChatMessage.assistant(response),
                         ChatMessage.user(summary_prompt)
-                    ])
-                    summary = await self.run_prompt(prompt, False)
+                    ], False)
                 thoughts[key] = response
                 responses.append({
                     "key": key,

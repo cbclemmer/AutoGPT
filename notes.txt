@@ -8,3 +8,4 @@ run agent: ./run agent start autogpt
 TODO:
 bot does not know when it is done
 it does not include plan when selecting command or when tree of thought command selection
+Break apart plan and try to always run first step in plan

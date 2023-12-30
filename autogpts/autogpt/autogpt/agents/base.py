@@ -279,6 +279,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
             self.command_registry.list_available_commands(self)
         ))
 
+        check_done_prompt = "Given the current information, is the task done. Do not give steps to solve the problem, only respond with \"Task_Done\" if this task is done."
         summary_prompt = "Summarize your last answer in a few sentences. Do not include code snippets in the summary."
         choose_command_prompt = "Which of these three commands is the best to use given the context above? Only respond with the command in a JSON format, nothing else."
         reasoning_prompt = "Describe your reasoning for choosing the command"
@@ -311,6 +312,46 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         command_args = { }
 
         count_tokens = lambda s: self.llm_provider.count_tokens(s, self.llm.name)
+        
+        get_response = lambda p: self.llm_provider.create_chat_completion(
+                p.messages,
+                functions=get_openai_command_specs(commands_list)
+                + list(self._prompt_scratchpad.commands.values())
+                if self.config.use_functions_api
+                else [],
+                model_name=self.llm.name,
+                completion_parser=lambda r: self.parse_and_process_response(
+                    r,
+                    p,
+                    scratchpad=self._prompt_scratchpad,
+                )
+            )
+        
+        prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=[
+            ChatMessage.user(check_done_prompt)
+        ])
+        prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+
+        logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+        logger.debug(f"Prompt token count: {count_tokens(dump_prompt(prompt))}")
+        
+        response = (await get_response(prompt)).response["content"]
+        logger.debug(f'Is done response: \n{response}')
+
+        if 'task_done' in response.lower():
+            return 'done', [], {
+                "thoughts": {
+                    "observation": "",
+                    "thoughts": "",
+                    "self_critisism": "",
+                    "speak": response,
+                    "plan": ""
+                },
+                "command": {
+                    "name": "done",
+                    "args": { }
+                }
+            }
 
         for key in prompts:
             value = prompts[key]
@@ -329,19 +370,6 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
 
             logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
             logger.debug(f"Prompt token count: {count_tokens(dump_prompt(prompt))}")
-            get_response = lambda p: self.llm_provider.create_chat_completion(
-                p.messages,
-                functions=get_openai_command_specs(commands_list)
-                + list(self._prompt_scratchpad.commands.values())
-                if self.config.use_functions_api
-                else [],
-                model_name=self.llm.name,
-                completion_parser=lambda r: self.parse_and_process_response(
-                    r,
-                    p,
-                    scratchpad=self._prompt_scratchpad,
-                )
-            )
 
             if key == "command":
                 commands = []
@@ -386,16 +414,12 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
                     response = (await get_response(prompt)).response["content"]
                     logger.debug('RES: ' + response)
-                    logger.debug('ONE')
                     try:
                         idx = response.lower().index('command #')
-                        logger.debug(f'TWO idx: {idx}')
                         num = int(response[idx+9])
-                        logger.debug('EIGHT')
                         selected_cmd = commands[num-1]
                     except:
                         continue
-                    logger.debug('THREE')
                     command_name = selected_cmd[0]["name"]
                     command_args = selected_cmd[0]["args"]
                     thoughts[key] = selected_cmd[0]

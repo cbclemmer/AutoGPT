@@ -255,6 +255,37 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
             return None
         return cmd
 
+    def count_tokens(self, s: str) -> int:
+        return self.llm_provider.count_tokens(s, self.llm.name)
+    
+    async def run_prompt(self, messages: List[ChatMessage], parse_scratchpad: bool = True) -> str:
+        commands_list = self.command_registry.list_available_commands(self)
+        
+        get_response = lambda p: self.llm_provider.create_chat_completion(
+                p.messages,
+                functions=get_openai_command_specs(commands_list)
+                + list(self._prompt_scratchpad.commands.values())
+                if self.config.use_functions_api
+                else [],
+                model_name=self.llm.name,
+                completion_parser=lambda r: self.parse_and_process_response(
+                    r,
+                    p,
+                    scratchpad=self._prompt_scratchpad,
+                )
+            )
+        prompt = ChatPrompt(messages=[])
+        if (parse_scratchpad):
+            prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=messages)
+            prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
+        else:
+            prompt = ChatPrompt(messages=messages)
+
+        logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
+        logger.debug(f"Prompt token count: {self.count_tokens(dump_prompt(prompt))}")
+        
+        return (await get_response(prompt)).response["content"]
+
 
     async def propose_action(self) -> ThoughtProcessOutput:
         """Proposes the next action to execute, based on the task and current state.
@@ -311,31 +342,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
         command_name = '' 
         command_args = { }
 
-        count_tokens = lambda s: self.llm_provider.count_tokens(s, self.llm.name)
-        
-        get_response = lambda p: self.llm_provider.create_chat_completion(
-                p.messages,
-                functions=get_openai_command_specs(commands_list)
-                + list(self._prompt_scratchpad.commands.values())
-                if self.config.use_functions_api
-                else [],
-                model_name=self.llm.name,
-                completion_parser=lambda r: self.parse_and_process_response(
-                    r,
-                    p,
-                    scratchpad=self._prompt_scratchpad,
-                )
-            )
-        
-        prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=[
-            ChatMessage.user(check_done_prompt)
-        ])
-        prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
-
-        logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-        logger.debug(f"Prompt token count: {count_tokens(dump_prompt(prompt))}")
-        
-        response = (await get_response(prompt)).response["content"]
+        response = await self.run_prompt([ChatMessage.user(check_done_prompt)])
         logger.debug(f'Is done response: \n{response}')
 
         if 'task_done' in response.lower():
@@ -365,28 +372,17 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                 extra_messages.append(ChatMessage.assistant(thoughts["plan"]))
 
             extra_messages.append(ChatMessage.user(value))
-            prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
-            prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
-
-            logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-            logger.debug(f"Prompt token count: {count_tokens(dump_prompt(prompt))}")
 
             if key == "command":
                 commands = []
                 while True:
-                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
-                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
-                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-                    response = (await get_response(prompt)).response["content"]
+                    response = await self.run_prompt(extra_messages)
                     selected_cmd = self._validate_command(response, command_names)
                     if selected_cmd is None:
                         continue
                     extra_messages.append(ChatMessage.assistant(json.dumps(selected_cmd)))
                     extra_messages.append(ChatMessage.user(reasoning_prompt))
-                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
-                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
-                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-                    reasoning = (await get_response(prompt)).response["content"]
+                    reasoning = await self.run_prompt(extra_messages)
                     commands.append((selected_cmd, reasoning))
                     logger.debug(f'CMD: {json.dumps(selected_cmd)}')
                     logger.debug(f'Reason: {reasoning}')
@@ -409,10 +405,7 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                         i += 1
                     
                     extra_messages.append(ChatMessage.user(prompt_str))
-                    prompt: ChatPrompt = self.build_prompt(scratchpad=self._prompt_scratchpad, extra_messages=extra_messages)
-                    prompt = self.on_before_think(prompt, scratchpad=self._prompt_scratchpad)
-                    logger.debug(f"Executing prompt:\n{dump_prompt(prompt)}")
-                    response = (await get_response(prompt)).response["content"]
+                    response = await self.run_prompt(extra_messages)
                     logger.debug('RES: ' + response)
                     try:
                         idx = response.lower().index('command #')
@@ -426,15 +419,15 @@ class BaseAgent(Configurable[BaseAgentSettings], ABC):
                     thoughts["reasoning"] = selected_cmd[1]
                     break
             else:
-                response = (await get_response(prompt)).response["content"]
+                response = await self.run_prompt(extra_messages)
                 summary = response
-                if  key != "plan" and count_tokens(response) > 100:
+                if  key != "plan" and self.count_tokens(response) > 100:
                     prompt = ChatPrompt(messages=[
                         ChatMessage.user(value),
                         ChatMessage.assistant(response),
                         ChatMessage.user(summary_prompt)
                     ])
-                    summary = (await get_response(prompt)).response["content"]
+                    summary = await self.run_prompt(prompt, False)
                 thoughts[key] = response
                 responses.append({
                     "key": key,
